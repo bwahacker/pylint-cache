@@ -453,11 +453,17 @@ def main():
     cache.close()
     
     print("-" * 80)
-    print(f"Summary: {total_files} files total, {cached_count} cached, {ran_count} ran")
+    print(f"📊 Summary:")
+    print(f"   Total files checked: {total_files}")
+    print(f"   ✅ Cached (skipped): {cached_count}")
+    print(f"   🔄 Newly analyzed: {ran_count}")
     
     if time_saved > 0:
-        print(f"Time saved this run: {time_saved:.2f}s")
-        print(f"Cumulative time saved: {cumulative_saved:.2f}s ({cumulative_saved/60:.1f} minutes)")
+        print(f"   ⚡ Time saved this run: {time_saved:.2f}s")
+        print(f"   🎯 Cumulative time saved: {cumulative_saved:.2f}s ({cumulative_saved/60:.1f} min)")
+    
+    # Also output in a parseable format for scripts
+    print(f"\n[STATS] files={total_files} cached={cached_count} ran={ran_count} saved={time_saved:.2f}s cumulative={cumulative_saved:.2f}s")
     
     sys.exit(max_exit_code)
 

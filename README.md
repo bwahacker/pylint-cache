@@ -93,7 +93,14 @@ system_monitor.py:971:8: E0401: Unable to import 'lib.featrix_debug' (import-err
 system_monitor.py:971:8: E0611: No name 'featrix_debug' in module 'lib' (no-name-in-module)
 
 --------------------------------------------------------------------------------
-Summary: 168 files total, 168 cached, 0 ran
+📊 Summary:
+   Total files checked: 168
+   ✅ Cached (skipped): 168
+   🔄 Newly analyzed: 0
+   ⚡ Time saved this run: 331.17s
+   🎯 Cumulative time saved: 331.17s (5.5 min)
+
+[STATS] files=168 cached=168 ran=0 saved=331.17s cumulative=331.17s
 
 real	0m0.199s
 user	0m0.047s
@@ -196,12 +203,20 @@ Every time you run `pylint-cache`, it tracks:
 Example output:
 
 ```
-Summary: 247 files total, 245 cached, 2 ran
-Time saved this run: 45.23s
-Cumulative time saved: 1847.56s (30.8 minutes)
+--------------------------------------------------------------------------------
+📊 Summary:
+   Total files checked: 247
+   ✅ Cached (skipped): 245
+   🔄 Newly analyzed: 2
+   ⚡ Time saved this run: 45.23s
+   🎯 Cumulative time saved: 1847.56s (30.8 min)
+
+[STATS] files=247 cached=245 ran=2 saved=45.23s cumulative=1847.56s
 ```
 
 This shows you the real-world impact of caching - how many minutes/hours you've saved by not re-running pylint on unchanged files!
+
+The `[STATS]` line is machine-parseable for scripts and CI integration.
 
 
 
@@ -210,7 +225,9 @@ This shows you the real-world impact of caching - how many minutes/hours you've 
 ```makefile
 .PHONY: lint
 lint:
-	pylint-cache src/ -- --disable=C0111
+	@echo "🔍 Running pylint error checks..."
+	@pylint-cache src/ --args="-E" || exit 1
+	@echo "✅ Pylint check completed"
 
 .PHONY: test
 test: lint
@@ -222,6 +239,25 @@ build: lint
 ```
 
 The tool exits with the highest pylint exit code from all files, so make will properly fail if any file has issues.
+
+### Parsing Output in Scripts
+
+The `[STATS]` line provides machine-parseable output:
+
+```bash
+#!/bin/bash
+output=$(pylint-cache src/ --args="-E" 2>&1)
+stats=$(echo "$output" | grep "^\[STATS\]")
+
+# Extract values
+files=$(echo "$stats" | grep -o 'files=[0-9]*' | cut -d= -f2)
+cached=$(echo "$stats" | grep -o 'cached=[0-9]*' | cut -d= -f2)
+ran=$(echo "$stats" | grep -o 'ran=[0-9]*' | cut -d= -f2)
+saved=$(echo "$stats" | grep -o 'saved=[0-9.]*s' | cut -d= -f2 | tr -d 's')
+
+echo "Checked $files files, $cached from cache, $ran newly analyzed"
+echo "Saved ${saved}s this run"
+```
 
 ## Automated Cache Pre-warming (Optional)
 
