@@ -1,0 +1,6 @@
+include README.md
+include LICENSE
+include CRON_SETUP.md
+include pylint-cache-cron.sh
+include install.sh
+
