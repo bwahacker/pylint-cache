@@ -266,15 +266,15 @@ echo "Saved ${saved}s this run"
 **Solution:** Run a background monitor that detects changes and triggers full re-analysis.
 
 ```bash
-# 1. Edit pylint-cache-monitor.sh to configure your project
-# 2. Add to crontab:
+# 1. Register your project(s)
+pylint-cache-monitor add /path/to/project --dirs src,lib --args "-E"
+
+# 2. Test it
+pylint-cache-monitor run -v
+
+# 3. Add to crontab
 crontab -e
-
-# Run every 15 minutes
-*/15 * * * * /path/to/pylint-cache-monitor.sh
-
-# Run every 30 minutes  
-*/30 * * * * /path/to/pylint-cache-monitor.sh
+# Add: */15 * * * * pylint-cache-monitor run
 ```
 
 See `MONITOR_SETUP.md` for detailed instructions.

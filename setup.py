@@ -15,10 +15,11 @@ setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/yourusername/pylint-cache",
-    py_modules=["pylint_cache"],
+    py_modules=["pylint_cache", "pylint_cache_monitor"],
     entry_points={
         "console_scripts": [
             "pylint-cache=pylint_cache:main",
+            "pylint-cache-monitor=pylint_cache_monitor:main",
         ],
     },
     classifiers=[

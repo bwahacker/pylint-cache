@@ -1,6 +1,6 @@
 # Background Monitoring Setup
 
-The monitor script runs in the background to detect file changes and trigger full re-analysis. This helps catch cross-file dependency issues that caching might hide.
+The monitor runs in the background to detect file changes and trigger full re-analysis. This helps catch cross-file dependency issues that caching might hide.
 
 ## Why Use the Monitor?
 
@@ -10,15 +10,39 @@ The monitor script runs in the background to detect file changes and trigger ful
 - Cross-file issues (import errors, type mismatches, etc.) might not be detected
 
 **The monitor solves this:**
-- Runs every 15-30 minutes (configurable)
+- Maintains a registry of projects to monitor in `~/.cache/pylint-cache-monitor/projects.json`
+- Runs every 15-30 minutes via cron (configurable)
 - Checks if ANY Python file changed since last run
 - If changes detected → runs pylint on ENTIRE tree
 - Results are cached, so developers get instant feedback
-- When you code and run `pylint-cache`, you see errors from the latest full analysis
+- Uses lock files to prevent concurrent runs on the same project
 
 ## Quick Setup
 
-### 1. Configure the Monitor Script
+### 1. Register Your Project(s)
+
+```bash
+# Register a project to monitor
+pylint-cache-monitor add /path/to/project --dirs src,lib --args "-E"
+
+# Register another project
+pylint-cache-monitor add /another/project --dirs app --args "--disable=C0111"
+
+# List all registered projects
+pylint-cache-monitor list
+```
+
+### 2. Test the Monitor
+
+```bash
+# Run manually to test
+pylint-cache-monitor run
+
+# Run with verbose output
+pylint-cache-monitor run -v
+```
+
+### 3. Configure Cron (OLD - Shell Script Approach)
 
 Edit `pylint-cache-monitor.sh`:
 
@@ -55,51 +79,73 @@ crontab -e
 Add one of these lines:
 
 ```cron
-# Every 15 minutes
-*/15 * * * * /path/to/pylint-cache-monitor.sh
+# Every 15 minutes (recommended)
+*/15 * * * * pylint-cache-monitor run
 
 # Every 30 minutes
-*/30 * * * * /path/to/pylint-cache-monitor.sh
+*/30 * * * * pylint-cache-monitor run
 
 # Every hour
-0 * * * * /path/to/pylint-cache-monitor.sh
+0 * * * * pylint-cache-monitor run
 
 # Every 15 minutes during work hours (8am-6pm, weekdays)
-*/15 8-18 * * 1-5 /path/to/pylint-cache-monitor.sh
+*/15 8-18 * * 1-5 pylint-cache-monitor run
 ```
 
-### 4. Monitor Multiple Projects
+**That's it!** All registered projects will be checked automatically.
 
-Create a wrapper script:
+## Registry Management
+
+### Add a Project
 
 ```bash
-#!/bin/bash
-# monitor-all.sh
-
-export PROJECT_DIR="/home/user/project1"
-export SOURCE_DIRS="src lib"
-export PYLINT_ARGS="-E"
-/path/to/pylint-cache-monitor.sh
-
-export PROJECT_DIR="/home/user/project2"
-export SOURCE_DIRS="app"
-export PYLINT_ARGS="--disable=C0111"
-/path/to/pylint-cache-monitor.sh
+pylint-cache-monitor add /path/to/project --dirs src,lib --args "-E"
 ```
 
-Then add to crontab:
+### Remove a Project
 
-```cron
-*/30 * * * * /path/to/monitor-all.sh
+```bash
+pylint-cache-monitor remove /path/to/project
+```
+
+### List Monitored Projects
+
+```bash
+pylint-cache-monitor list
+```
+
+Output:
+```
+Monitored projects (2):
+--------------------------------------------------------------------------------
+
+📁 /home/user/project1
+   Source dirs: src, lib
+   Pylint args: -E
+   Last run: 2025-11-24 14:30:15
+
+📁 /home/user/project2
+   Source dirs: app
+   Pylint args: --disable=C0111
+   Last run: 2025-11-24 14:31:42
 ```
 
 ## How It Works
 
-1. **State Tracking**: Stores last run timestamp in `~/.cache/pylint-cache-monitor/last_run_<hash>.state`
-2. **Change Detection**: Uses `find -newermt` to detect files modified since last run
-3. **Full Re-analysis**: If changes found, runs `pylint-cache` on entire tree
-4. **Cache Update**: Results are stored in the cache database
-5. **Developer Benefit**: When you run `pylint-cache` while coding, you get cached results from the latest full analysis
+1. **Registry**: Stores project list and config in `~/.cache/pylint-cache-monitor/projects.json`
+2. **State Tracking**: Stores last run timestamp per project in the registry
+3. **Lock Files**: Creates lock files in `~/.cache/pylint-cache-monitor/locks/` to prevent concurrent runs
+4. **Change Detection**: Checks file modification times since last run
+5. **Full Re-analysis**: If changes found, runs `pylint-cache` on entire tree
+6. **Cache Update**: Results are stored in the cache database
+7. **Developer Benefit**: When you run `pylint-cache` while coding, you get cached results from the latest full analysis
+
+### Concurrency Protection
+
+- If cron triggers while a project is already being analyzed, the new job **exits immediately**
+- Uses `fcntl` file locking (Linux/macOS) for reliable concurrency control
+- Lock files are automatically cleaned up after analysis completes
+- Stale locks (>1 hour old) are automatically removed
 
 ## Workflow Example
 
@@ -124,6 +170,16 @@ Then add to crontab:
 
 ## Logs and Debugging
 
+### Check Registry
+
+```bash
+# List all registered projects
+pylint-cache-monitor list
+
+# View registry file directly
+cat ~/.cache/pylint-cache-monitor/projects.json
+```
+
 ### Check Monitor Logs
 
 ```bash
@@ -135,6 +191,13 @@ ls -lh ~/.cache/pylint-cache-monitor/logs/
 
 # Recent activity
 tail -50 ~/.cache/pylint-cache-monitor/logs/monitor-$(date +%Y%m%d).log
+```
+
+### Check Lock Files
+
+```bash
+# See if any projects are currently running
+ls -lh ~/.cache/pylint-cache-monitor/locks/
 ```
 
 ### Verify Cron is Running
@@ -153,32 +216,28 @@ tail -f /var/log/system.log | grep cron  # macOS
 ### Manual Test
 
 ```bash
-# Set a test project
-export PROJECT_DIR="/path/to/project"
-export SOURCE_DIRS="src"
-export PYLINT_ARGS="-E"
+# Register a test project
+pylint-cache-monitor add /path/to/project --dirs src --args "-E"
 
 # Run the monitor
-./pylint-cache-monitor.sh
+pylint-cache-monitor run -v
 
 # Touch a file to trigger re-analysis
 touch /path/to/project/src/somefile.py
 
-# Run again - should detect change
-./pylint-cache-monitor.sh
+# Run again - should detect change and re-analyze
+pylint-cache-monitor run -v
 ```
 
-## Environment Variables
-
-Override configuration via environment variables:
+### Simulate Concurrent Run
 
 ```bash
-export PROJECT_DIR="/custom/path"
-export SOURCE_DIRS="src lib tests"
-export PYLINT_ARGS="--disable=C0111 --max-line-length=120"
-export PYLINT_CACHE_CMD="/usr/local/bin/pylint-cache"
+# Terminal 1: Start long-running analysis
+pylint-cache-monitor run
 
-./pylint-cache-monitor.sh
+# Terminal 2: Try to run again (should be skipped)
+pylint-cache-monitor run
+# Output: 🔒 Skipping /path/to/project (already running)
 ```
 
 ## Performance Considerations

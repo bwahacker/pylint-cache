@@ -31,6 +31,7 @@ dependencies = [
 
 [project.scripts]
 pylint-cache = "pylint_cache:main"
+pylint-cache-monitor = "pylint_cache_monitor:main"
 
 [project.urls]
 Homepage = "https://github.com/yourusername/pylint-cache"
