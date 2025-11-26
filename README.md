@@ -259,29 +259,48 @@ echo "Checked $files files, $cached from cache, $ran newly analyzed"
 echo "Saved ${saved}s this run"
 ```
 
-## Automated Cache Pre-warming (Optional)
+## Background Monitoring (Recommended)
 
-Pre-populate the cache during off-hours so developers get instant results:
+**Problem:** Caching per-file is fast but might miss cross-file dependency issues.
+
+**Solution:** Run a background monitor that detects changes and triggers full re-analysis.
 
 ```bash
-# 1. Edit pylint-cache-cron.sh to configure your projects
+# 1. Edit pylint-cache-monitor.sh to configure your project
 # 2. Add to crontab:
 crontab -e
 
+# Run every 15 minutes
+*/15 * * * * /path/to/pylint-cache-monitor.sh
+
+# Run every 30 minutes  
+*/30 * * * * /path/to/pylint-cache-monitor.sh
+```
+
+See `MONITOR_SETUP.md` for detailed instructions.
+
+**How it works:**
+- Monitor wakes up every 15-30 minutes
+- Checks if ANY Python file changed since last run
+- If changes detected → runs pylint on ENTIRE tree
+- Results are cached → developers get instant feedback with cross-file analysis
+
+**Benefits:**
+- 🔍 Catches import errors and cross-file issues
+- ⚡ Developers still get instant cache hits
+- 🔄 Automatic full re-analysis when needed
+- 🎯 Best of both worlds: speed + accuracy
+
+## Automated Cache Pre-warming (Optional)
+
+Pre-populate the cache for multiple projects:
+
+```bash
 # Run every night at 2 AM
 0 2 * * * /path/to/pylint-cache-cron.sh
-
-# Run every hour
-0 * * * * /path/to/pylint-cache-cron.sh
 ```
 
 See `CRON_SETUP.md` for detailed instructions.
-
-**Benefits:**
-- 🚀 Instant cache hits in the morning
-- 🔄 Keep cache fresh automatically
-- 👥 Share cache across team on network drives
-- ⚡ Faster CI/CD builds
 
 ## How It Works
 
@@ -363,7 +382,8 @@ The tool exits with the highest exit code from all pylint runs (cached or fresh)
 
 ### Current Limitations
 
-- **No cross-file dependency tracking**: If `file_a.py` imports `file_b.py` and `file_b.py` changes, we won't automatically re-check `file_a.py`. Pylint's built-in cache handles some of this, but we skip pylint entirely.
+- **No automatic cross-file dependency tracking**: If `file_a.py` imports `file_b.py` and `file_b.py` changes, we won't automatically re-check `file_a.py` unless you use the monitor script.
+  - **Solution**: Use `pylint-cache-monitor.sh` to periodically trigger full re-analysis
 - **Single-threaded**: Files are checked sequentially (though this is still faster than pylint due to caching)
 
 ### Potential Future Enhancements

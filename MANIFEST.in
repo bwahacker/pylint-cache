@@ -1,6 +1,8 @@
 include README.md
 include LICENSE
 include CRON_SETUP.md
+include MONITOR_SETUP.md
 include pylint-cache-cron.sh
+include pylint-cache-monitor.sh
 include install.sh
 
