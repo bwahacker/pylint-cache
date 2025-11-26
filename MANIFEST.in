@@ -4,5 +4,6 @@ include CRON_SETUP.md
 include MONITOR_SETUP.md
 include pylint-cache-cron.sh
 include pylint-cache-monitor.sh
+include pylint_cache_monitor.py
 include install.sh
 
