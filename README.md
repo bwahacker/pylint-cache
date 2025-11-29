@@ -171,12 +171,35 @@ pylint-cache src/ --args='--disable=C0111 --max-line-length=100'
 
 # Check entire directory (recursively finds .py files)
 pylint-cache src/
+
+# Force rebuild - ignore cache and re-run pylint on everything
+pylint-cache src/ --force
+pylint-cache src/ -f  # Short form
 ```
 
 Or run directly without installation:
 
 ```bash
 ./pylint_cache.py myfile.py
+```
+
+### When to Use --force
+
+The `--force` (or `-f`) flag bypasses the cache and re-runs pylint on all files. Use it when:
+
+- **Testing changes to pylint configuration** (e.g., modified `.pylintrc`)
+- **After upgrading pylint** to ensure rules are applied with new version
+- **Cache corruption suspected** - rebuild from scratch
+- **Changed pylint arguments** significantly (though different args get separate cache entries)
+- **Debugging** - verify cached results match fresh analysis
+
+```bash
+# Example: After updating .pylintrc
+pylint-cache src/ --force --args="-E"
+
+# Example: After upgrading pylint
+pip install --upgrade pylint
+pylint-cache . -f
 ```
 
 ### Directory Recursion
@@ -257,6 +280,25 @@ saved=$(echo "$stats" | grep -o 'saved=[0-9.]*s' | cut -d= -f2 | tr -d 's')
 
 echo "Checked $files files, $cached from cache, $ran newly analyzed"
 echo "Saved ${saved}s this run"
+```
+
+### Force Rebuild in CI/CD
+
+For CI/CD pipelines, you might want to force a full rebuild periodically:
+
+```yaml
+# .gitlab-ci.yml example
+lint:
+  script:
+    # Use cache for speed
+    - pylint-cache src/ --args="-E"
+  
+lint-weekly-full:
+  script:
+    # Full rebuild once a week to ensure accuracy
+    - pylint-cache src/ --force --args="-E"
+  only:
+    - schedules
 ```
 
 ## Background Monitoring (Recommended)

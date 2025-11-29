@@ -290,30 +290,41 @@ def run_pylint(file_path: str, pylint_args: List[str]) -> Tuple[str, int, float]
         return f"ERROR: Failed to run pylint: {e}", 1, 0.0
 
 
-def parse_arguments() -> Tuple[List[str], List[str]]:
+def parse_arguments() -> Tuple[List[str], List[str], bool]:
     """
     Parse command line arguments.
     
     Returns:
-        Tuple of (file_paths, pylint_args)
+        Tuple of (file_paths, pylint_args, force_rebuild)
     """
+    args = sys.argv[1:]
+    force_rebuild = False
+    
+    # Check for --force or -f flag
+    if '--force' in args:
+        force_rebuild = True
+        args = [a for a in args if a != '--force']
+    elif '-f' in args:
+        force_rebuild = True
+        args = [a for a in args if a != '-f']
+    
     # Check for --args= style
-    for i, arg in enumerate(sys.argv[1:], 1):
+    for i, arg in enumerate(args):
         if arg.startswith('--args='):
             args_str = arg[7:]  # Remove '--args='
-            file_paths = sys.argv[1:i]
+            file_paths = args[:i]
             pylint_args = args_str.split() if args_str else []
-            return file_paths, pylint_args
+            return file_paths, pylint_args, force_rebuild
     
     # Check for -- separator style
-    if '--' in sys.argv[1:]:
-        separator_idx = sys.argv.index('--')
-        file_paths = sys.argv[1:separator_idx]
-        pylint_args = sys.argv[separator_idx + 1:]
-        return file_paths, pylint_args
+    if '--' in args:
+        separator_idx = args.index('--')
+        file_paths = args[:separator_idx]
+        pylint_args = args[separator_idx + 1:]
+        return file_paths, pylint_args, force_rebuild
     
     # No pylint args, all arguments are file paths
-    return sys.argv[1:], []
+    return args, [], force_rebuild
 
 
 def expand_paths(paths: List[str]) -> List[str]:
@@ -376,12 +387,15 @@ def main():
         print("  pylint-cache myfile.py")
         print("  pylint-cache file1.py file2.py -- --disable=C0111")
         print("  pylint-cache src/ --args='--disable=C0111 --max-line-length=100'")
+        print("  pylint-cache src/ --force  # Force rebuild, ignore cache")
+        print("\nOptions:")
+        print("  -f, --force    Force re-run pylint on all files, ignore cache")
         print("\nNote: When given directories, recursively finds .py files")
         print("      while ignoring common directories like venv/, .git/, etc.")
         sys.exit(0)
     
     # Parse arguments
-    file_paths, pylint_args = parse_arguments()
+    file_paths, pylint_args, force_rebuild = parse_arguments()
     
     if not file_paths:
         print("ERROR: No file paths provided", file=sys.stderr)
@@ -411,11 +425,13 @@ def main():
     print(f"Found {total_files} Python file(s) to check")
     print(f"Pylint args: {pylint_args_str or '(none)'}")
     print(f"Cache database: {cache.db_path}")
+    if force_rebuild:
+        print(f"Mode: FORCE REBUILD (ignoring cache)")
     print("-" * 80)
     
     for file_path in python_files:
-        # Check cache first
-        cached_result = cache.check_cache(file_path, pylint_args_str)
+        # Check cache first (unless force rebuild)
+        cached_result = None if force_rebuild else cache.check_cache(file_path, pylint_args_str)
         
         if cached_result:
             cached_from = cached_result.get('cached_from')
