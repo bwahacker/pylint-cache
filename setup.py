@@ -8,13 +8,13 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="pylint-cache",
-    version="1.0.0",
-    author="Your Name",
-    author_email="your.email@example.com",
+    version="1.0.1",
+    author="Mitch Haile",
+    author_email="mitch@featrix.ai",
     description="A smart caching wrapper for pylint that avoids re-running checks on unchanged files",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/pylint-cache",
+    url="https://www.featrix.ai",
     py_modules=["pylint_cache", "pylint_cache_monitor"],
     entry_points={
         "console_scripts": [

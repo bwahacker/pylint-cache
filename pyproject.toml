@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pylint-cache"
-version = "1.0.0"
+version = "1.0.1"
 description = "A smart caching wrapper for pylint that avoids re-running checks on unchanged files"
 readme = "README.md"
 requires-python = ">=3.7"
 license = {text = "MIT"}
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "Mitch Haile", email = "mitch@featrix.ai"}
 ]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -34,6 +34,7 @@ pylint-cache = "pylint_cache:main"
 pylint-cache-monitor = "pylint_cache_monitor:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/pylint-cache"
-Issues = "https://github.com/yourusername/pylint-cache/issues"
+Homepage = "https://www.featrix.ai"
+Repository = "https://github.com/bwahacker/pylint-cache"
+Issues = "https://github.com/bwahacker/pylint-cache/issues"
 
