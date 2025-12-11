@@ -12,14 +12,106 @@ Usage:
 """
 
 import argparse
+import ast
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
+
+
+def extract_imports(file_path: str, all_files: Set[str] = None) -> Set[str]:
+    """
+    Extract import statements from a Python file and resolve them to actual file paths.
+    
+    Args:
+        file_path: Path to the Python file to analyze
+        all_files: Optional set of all Python files in the project (for resolving local imports)
+        
+    Returns:
+        Set of resolved file paths that this file imports
+    """
+    imports = set()
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+    except (OSError, IOError):
+        return imports
+    
+    # Try AST parsing first (more accurate)
+    try:
+        tree = ast.parse(content)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imports.add(alias.name.split('.')[0])  # Get top-level module
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    imports.add(node.module.split('.')[0])  # Get top-level module
+                elif node.level > 0:
+                    # Relative import - we'll handle this below
+                    pass
+    except SyntaxError:
+        # Fall back to regex-based parsing for files with syntax errors
+        import_pattern = re.compile(
+            r'^(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))', 
+            re.MULTILINE
+        )
+        for match in import_pattern.finditer(content):
+            module = match.group(1) or match.group(2)
+            if module:
+                imports.add(module.split('.')[0])
+    
+    # Now resolve module names to actual file paths
+    if all_files is None:
+        return imports
+    
+    # Build a mapping of module names to file paths
+    resolved = set()
+    file_path_obj = Path(file_path).resolve()
+    file_dir = file_path_obj.parent
+    
+    # Create a module-to-file mapping from all_files
+    module_to_file: Dict[str, str] = {}
+    for f in all_files:
+        f_path = Path(f).resolve()
+        # Get the module name (filename without .py)
+        module_name = f_path.stem
+        # Also track the full path for exact matching
+        module_to_file[module_name] = str(f_path)
+        
+        # Also add parent-relative paths for package imports
+        # e.g., featrix.input_data_set -> input_data_set.py
+        parts = f_path.parts
+        for i in range(len(parts) - 1, 0, -1):
+            if parts[i].endswith('.py'):
+                partial_path = '.'.join(parts[i:]).replace('.py', '')
+                module_to_file[partial_path] = str(f_path)
+    
+    for import_name in imports:
+        # Check if this import corresponds to a local file
+        # 1. Direct module name match
+        if import_name in module_to_file:
+            resolved.add(module_to_file[import_name])
+            continue
+        
+        # 2. Check for relative path from current file's directory
+        potential_file = file_dir / f"{import_name}.py"
+        if potential_file.exists() and str(potential_file) in all_files:
+            resolved.add(str(potential_file))
+            continue
+        
+        # 3. Check for package (directory with __init__.py)
+        potential_pkg = file_dir / import_name / "__init__.py"
+        if potential_pkg.exists() and str(potential_pkg) in all_files:
+            resolved.add(str(potential_pkg))
+    
+    return resolved
 
 
 class PylintCache:
@@ -37,6 +129,10 @@ class PylintCache:
         self.db_path = db_path
         self.conn = None
         self._init_db()
+        
+        # In-memory import graphs for current run
+        self.import_graph: Dict[str, Set[str]] = {}  # file → files it imports
+        self.reverse_graph: Dict[str, Set[str]] = {}  # file → files that import it
     
     def _init_db(self):
         """Initialize the SQLite database with the required schema."""
@@ -87,6 +183,23 @@ class PylintCache:
                 time_saved REAL NOT NULL,
                 cumulative_time_saved REAL NOT NULL
             )
+        """)
+        
+        # Table 5: Import dependencies (for smart cache invalidation)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS import_dependencies (
+                importer_path TEXT NOT NULL,
+                imported_path TEXT NOT NULL,
+                importer_md5 TEXT NOT NULL,
+                last_updated REAL NOT NULL,
+                PRIMARY KEY (importer_path, imported_path)
+            )
+        """)
+        
+        # Index for reverse lookups (finding files that import a given file)
+        self.conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_imported_path 
+            ON import_dependencies(imported_path)
         """)
         
         self.conn.commit()
@@ -252,6 +365,137 @@ class PylintCache:
         
         return cumulative
     
+    def build_import_graph(self, python_files: List[str]) -> None:
+        """
+        Build the import graph for all Python files.
+        
+        This creates:
+        - import_graph: file → files it imports
+        - reverse_graph: file → files that import it
+        
+        Args:
+            python_files: List of Python file paths to analyze
+        """
+        import time
+        
+        # Convert to set and resolve paths for efficient lookup
+        all_files_set = {str(Path(f).resolve()) for f in python_files}
+        
+        self.import_graph = {}
+        self.reverse_graph = {}
+        timestamp = time.time()
+        
+        for file_path in python_files:
+            resolved_path = str(Path(file_path).resolve())
+            
+            # Extract imports and resolve to actual files
+            imported_files = extract_imports(file_path, all_files_set)
+            
+            # Store in memory
+            self.import_graph[resolved_path] = imported_files
+            
+            # Build reverse graph
+            for imported in imported_files:
+                if imported not in self.reverse_graph:
+                    self.reverse_graph[imported] = set()
+                self.reverse_graph[imported].add(resolved_path)
+            
+            # Get MD5 for tracking changes
+            try:
+                md5_hash, _, _ = self.get_file_metadata(file_path)
+            except (OSError, IOError):
+                continue
+            
+            # Store in database (clear old entries first, then insert new ones)
+            self.conn.execute(
+                "DELETE FROM import_dependencies WHERE importer_path = ?",
+                (resolved_path,)
+            )
+            
+            for imported in imported_files:
+                self.conn.execute("""
+                    INSERT OR REPLACE INTO import_dependencies
+                    (importer_path, imported_path, importer_md5, last_updated)
+                    VALUES (?, ?, ?, ?)
+                """, (resolved_path, imported, md5_hash, timestamp))
+        
+        self.conn.commit()
+    
+    def get_files_importing(self, file_path: str) -> Set[str]:
+        """
+        Get all files that import the given file (one layer).
+        
+        Args:
+            file_path: Path to the file
+            
+        Returns:
+            Set of file paths that import this file
+        """
+        resolved_path = str(Path(file_path).resolve())
+        
+        # First check in-memory graph
+        if resolved_path in self.reverse_graph:
+            return self.reverse_graph[resolved_path]
+        
+        # Fall back to database
+        cursor = self.conn.execute("""
+            SELECT importer_path FROM import_dependencies
+            WHERE imported_path = ?
+        """, (resolved_path,))
+        
+        return {row[0] for row in cursor.fetchall()}
+    
+    def get_files_to_invalidate(self, changed_files: Set[str]) -> Set[str]:
+        """
+        Get all files that need to be invalidated (re-linted) based on changes.
+        
+        This includes:
+        1. The changed files themselves
+        2. Files that import the changed files (one layer of dependencies)
+        
+        Args:
+            changed_files: Set of file paths that have changed
+            
+        Returns:
+            Set of file paths that need to be re-linted
+        """
+        to_invalidate = set()
+        
+        for changed_file in changed_files:
+            resolved = str(Path(changed_file).resolve())
+            to_invalidate.add(resolved)
+            
+            # Add files that import this file
+            importers = self.get_files_importing(resolved)
+            to_invalidate.update(importers)
+        
+        return to_invalidate
+    
+    def has_file_changed(self, file_path: str, pylint_args: str) -> Tuple[bool, Optional[str]]:
+        """
+        Check if a file has changed since last cache entry.
+        
+        Args:
+            file_path: Path to check
+            pylint_args: Pylint args string
+            
+        Returns:
+            Tuple of (has_changed, current_md5)
+        """
+        try:
+            current_md5, _, _ = self.get_file_metadata(file_path)
+        except (OSError, IOError):
+            return True, None
+        
+        # Check if we have a cached result for this MD5
+        cursor = self.conn.execute("""
+            SELECT 1 FROM pylint_results
+            WHERE md5_hash = ? AND pylint_args = ?
+        """, (current_md5, pylint_args))
+        
+        has_cached = cursor.fetchone() is not None
+        return not has_cached, current_md5
+    
     def close(self):
         """Close the database connection."""
         if self.conn:
@@ -390,6 +634,9 @@ def main():
         print("  pylint-cache src/ --force  # Force rebuild, ignore cache")
         print("\nOptions:")
         print("  -f, --force    Force re-run pylint on all files, ignore cache")
+        print("\nFeatures:")
+        print("  - Smart dependency-based cache invalidation")
+        print("  - When a file changes, dependent files (importers) are also re-linted")
         print("\nNote: When given directories, recursively finds .py files")
         print("      while ignoring common directories like venv/, .git/, etc.")
         sys.exit(0)
@@ -416,10 +663,6 @@ def main():
     pylint_args_str = ' '.join(pylint_args)
     
     total_files = len(python_files)
-    cached_count = 0
-    ran_count = 0
-    max_exit_code = 0
-    time_saved = 0.0
     
     # Show what we're checking
     print(f"Found {total_files} Python file(s) to check")
@@ -427,39 +670,113 @@ def main():
     print(f"Cache database: {cache.db_path}")
     if force_rebuild:
         print(f"Mode: FORCE REBUILD (ignoring cache)")
-    print("-" * 80)
+    
+    # =========================================================================
+    # SMART DEPENDENCY-BASED CACHE INVALIDATION
+    # =========================================================================
+    
+    # Step 1: Build import graph for all files
+    print(f"Building import graph...")
+    cache.build_import_graph(python_files)
+    
+    # Step 2: Identify files that have actually changed (content differs)
+    changed_files: Set[str] = set()
+    file_md5_cache: Dict[str, str] = {}  # Store MD5s for later
     
     for file_path in python_files:
-        # Check cache first (unless force rebuild)
-        cached_result = None if force_rebuild else cache.check_cache(file_path, pylint_args_str)
+        has_changed, current_md5 = cache.has_file_changed(file_path, pylint_args_str)
+        if current_md5:
+            file_md5_cache[file_path] = current_md5
+        if has_changed:
+            changed_files.add(str(Path(file_path).resolve()))
+    
+    # Step 3: Use smart invalidation - get files to re-lint
+    # This includes changed files + files that import them
+    if force_rebuild:
+        files_to_lint = {str(Path(f).resolve()) for f in python_files}
+        invalidated_dependents: Set[str] = set()
+    else:
+        files_to_lint = cache.get_files_to_invalidate(changed_files)
+        # Track which files are being invalidated due to dependencies
+        invalidated_dependents = files_to_lint - changed_files
+    
+    # Create a mapping from resolved paths back to original paths
+    resolved_to_original = {str(Path(f).resolve()): f for f in python_files}
+    
+    # Show smart invalidation info
+    if changed_files and not force_rebuild:
+        print(f"\n🔍 Smart Dependency Analysis:")
+        print(f"   Files with content changes: {len(changed_files)}")
+        if invalidated_dependents:
+            print(f"   Dependent files to re-lint: {len(invalidated_dependents)}")
+            for dep in sorted(invalidated_dependents)[:5]:  # Show first 5
+                original_path = resolved_to_original.get(dep, dep)
+                print(f"      → {os.path.basename(original_path)} (imports changed file)")
+            if len(invalidated_dependents) > 5:
+                print(f"      ... and {len(invalidated_dependents) - 5} more")
+        print(f"   Total files to lint: {len(files_to_lint)}")
+        print(f"   Files using cache: {total_files - len(files_to_lint)}")
+    
+    print("-" * 80)
+    
+    # =========================================================================
+    # RUN PYLINT
+    # =========================================================================
+    
+    cached_count = 0
+    ran_count = 0
+    max_exit_code = 0
+    time_saved = 0.0
+    
+    for file_path in python_files:
+        resolved_path = str(Path(file_path).resolve())
+        needs_lint = resolved_path in files_to_lint
         
-        if cached_result:
-            cached_from = cached_result.get('cached_from')
-            if cached_from:
-                print(f"[CACHED from {cached_from}] {file_path}")
+        if not needs_lint and not force_rebuild:
+            # File doesn't need linting - use cache
+            cached_result = cache.check_cache(file_path, pylint_args_str)
+            
+            if cached_result:
+                cached_from = cached_result.get('cached_from')
+                if cached_from:
+                    print(f"[CACHED from {cached_from}] {file_path}")
+                else:
+                    print(f"[CACHED] {file_path}")
+                if cached_result['output']:
+                    print(cached_result['output'])
+                cached_count += 1
+                max_exit_code = max(max_exit_code, cached_result['exit_code'])
+                time_saved += cached_result['duration']
+                
+                # Update the file_paths table even for cached results
+                cache.store_result(file_path, pylint_args_str, 
+                                 cached_result['output'], cached_result['exit_code'],
+                                 cached_result['duration'],
+                                 md5_hash=cached_result['md5'])
             else:
-                print(f"[CACHED] {file_path}")
-            if cached_result['output']:
-                print(cached_result['output'])
-            cached_count += 1
-            max_exit_code = max(max_exit_code, cached_result['exit_code'])
+                # No cache available, need to run
+                needs_lint = True
+        
+        if needs_lint or force_rebuild:
+            # Determine reason for linting
+            if force_rebuild:
+                reason = "FORCE"
+            elif resolved_path in changed_files:
+                reason = "CHANGED"
+            elif resolved_path in invalidated_dependents:
+                reason = "DEPENDENCY"
+            else:
+                reason = "RUNNING"
             
-            # Track time saved
-            time_saved += cached_result['duration']
-            
-            # Update the file_paths table even for cached results
-            cache.store_result(file_path, pylint_args_str, 
-                             cached_result['output'], cached_result['exit_code'],
-                             cached_result['duration'],
-                             md5_hash=cached_result['md5'])
-        else:
-            print(f"[RUNNING] {file_path}")
+            print(f"[{reason}] {file_path}")
             output, exit_code, duration = run_pylint(file_path, pylint_args)
             if output:
                 print(output)
             
             # Store in cache
-            cache.store_result(file_path, pylint_args_str, output, exit_code, duration)
+            md5_hash = file_md5_cache.get(file_path)
+            cache.store_result(file_path, pylint_args_str, output, exit_code, duration, 
+                             md5_hash=md5_hash)
             ran_count += 1
             max_exit_code = max(max_exit_code, exit_code)
     
@@ -470,16 +787,20 @@ def main():
     
     print("-" * 80)
     print(f"📊 Summary:")
-    print(f"   Total files checked: {total_files}")
+    print(f"   Total files in scope: {total_files}")
     print(f"   ✅ Cached (skipped): {cached_count}")
     print(f"   🔄 Newly analyzed: {ran_count}")
+    if invalidated_dependents and not force_rebuild:
+        print(f"   🔗 Re-linted due to dependencies: {len(invalidated_dependents)}")
     
     if time_saved > 0:
         print(f"   ⚡ Time saved this run: {time_saved:.2f}s")
         print(f"   🎯 Cumulative time saved: {cumulative_saved:.2f}s ({cumulative_saved/60:.1f} min)")
     
     # Also output in a parseable format for scripts
-    print(f"\n[STATS] files={total_files} cached={cached_count} ran={ran_count} saved={time_saved:.2f}s cumulative={cumulative_saved:.2f}s")
+    print(f"\n[STATS] files={total_files} cached={cached_count} ran={ran_count} "
+          f"deps_invalidated={len(invalidated_dependents)} saved={time_saved:.2f}s "
+          f"cumulative={cumulative_saved:.2f}s")
     
     sys.exit(max_exit_code)
 

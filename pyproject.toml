@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pylint-cache"
-version = "1.0.1"
-description = "A smart caching wrapper for pylint that avoids re-running checks on unchanged files"
+version = "1.1.0"
+description = "A smart caching wrapper for pylint with dependency-aware cache invalidation"
 readme = "README.md"
 requires-python = ">=3.7"
 license = {text = "MIT"}

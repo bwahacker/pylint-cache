@@ -98,3 +98,6 @@ find "$LOG_DIR" -name "pylint-cache-*.log" -mtime +30 -delete 2>/dev/null || tru
 
 exit 0
 
+
+
+

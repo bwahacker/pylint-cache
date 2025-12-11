@@ -1,6 +1,6 @@
 # pylint-cache
 
-A smart caching wrapper for pylint that avoids re-running checks on unchanged files.
+A smart caching wrapper for pylint with **dependency-aware cache invalidation**.
 
 ## Why Bother?
 
@@ -146,6 +146,7 @@ sudo ./install.sh uninstall
 
 ## Features
 
+- **Smart Dependency Tracking**: When a file changes, files that import it are also re-linted (catches cross-file errors!)
 - **Intelligent Caching**: Tracks file MD5 hash, modification time, and size
 - **SQLite Backend**: Stores results in a local `.pylint-cache.db` database
 - **Argument Tracking**: Caches results per unique set of pylint arguments
@@ -361,6 +362,47 @@ The cache uses MD5 as the primary lookup key, which means:
 - ✅ Touching a file (updating mtime) without changing content? Still cached!
 - ✅ Same file analyzed in different projects? Reuses results across projects!
 
+### Smart Dependency-Based Invalidation (v1.1.0+)
+
+When you change a file, pylint-cache automatically detects and re-lints files that **import** the changed file. This catches cross-file errors without requiring a full re-lint!
+
+**Example:**
+```
+input_data_set.py changed
+  → Re-lint embedded_space.py (imports input_data_set)
+  → Re-lint single_predictor.py (imports input_data_set)
+  → Keep single_predictor_mlp.py cached (doesn't import it)
+  → Keep 180 other files cached
+```
+
+**Result:** Re-lint 3 files instead of 186, but still catch all cross-file errors!
+
+**Sample output:**
+```
+🔍 Smart Dependency Analysis:
+   Files with content changes: 1
+   Dependent files to re-lint: 2
+      → embedded_space.py (imports changed file)
+      → single_predictor.py (imports changed file)
+   Total files to lint: 3
+   Files using cache: 183
+--------------------------------------------------------------------------------
+[CHANGED] input_data_set.py
+[DEPENDENCY] embedded_space.py
+[DEPENDENCY] single_predictor.py
+[CACHED] single_predictor_mlp.py
+...
+```
+
+**How it works:**
+1. Builds an import graph for all Python files at startup
+2. Identifies files where content (MD5) differs from cache
+3. Looks up the reverse dependency graph to find importers
+4. Re-lints changed files + their importers (one layer)
+5. Other files use cached results
+
+This gives you the **speed of caching** AND the **correctness of dependency-aware analysis**!
+
 ## Cache Location
 
 The cache is stored in `~/.pylint-cache.db` in your home directory by default.
@@ -414,7 +456,14 @@ Tracks cumulative time savings:
 - `time_saved` - Time saved this run (seconds)
 - `cumulative_time_saved` - Total time saved ever (seconds)
 
-This design allows multiple file paths to reference the same content, efficiently tracks which files we've seen, and shows you exactly how much time the cache has saved you.
+### Table 5: `import_dependencies`
+Tracks which files import which other files (for smart invalidation):
+- `importer_path` (PRIMARY KEY part 1) - File that contains the import
+- `imported_path` (PRIMARY KEY part 2) - File being imported
+- `importer_md5` - MD5 of importer when graph was built
+- `last_updated` - Timestamp of last update
+
+This design allows multiple file paths to reference the same content, efficiently tracks which files we've seen, enables smart dependency-based cache invalidation, and shows you exactly how much time the cache has saved you.
 
 ## Exit Codes
 
@@ -424,15 +473,14 @@ The tool exits with the highest exit code from all pylint runs (cached or fresh)
 
 ### Current Limitations
 
-- **No automatic cross-file dependency tracking**: If `file_a.py` imports `file_b.py` and `file_b.py` changes, we won't automatically re-check `file_a.py` unless you use the monitor script.
-  - **Solution**: Use `pylint-cache-monitor.sh` to periodically trigger full re-analysis
+- **One-level dependency tracking**: Currently tracks direct imports only. If A imports B imports C, changing C won't invalidate A (only B). Use `pylint-cache-monitor` for deep dependency analysis.
 - **Single-threaded**: Files are checked sequentially (though this is still faster than pylint due to caching)
 
 ### Potential Future Enhancements
 
 Want to help extend this? Here are some ideas:
 
-- 🔗 **Detect changed transitive imports** - Track import graphs and invalidate cache when dependencies change
+- 🔗 **Transitive dependency tracking** - Invalidate multi-level import chains (A→B→C)
 - ⚡ **Parallel execution** - Check multiple files simultaneously  
 - 📊 **Track errors over time** - Historical tracking of what errors changed
 - 📄 **HTML reports** - Generate browsable reports of issues
@@ -440,4 +488,3 @@ Want to help extend this? Here are some ideas:
 - 🌐 **Shared team cache** - Central cache server for CI/CD
 
 Pull requests welcome!
-Cache pylint results.
